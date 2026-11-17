@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "regexSubstitution": "__PRODUCTION_APP_URL__\\1"
+      }
+    },
+    "condition": {
+      "regexFilter": "^__PRODUCTION_ORIGIN_REGEX__/Omnify7/(.*)$",
+      "resourceTypes": ["main_frame"]
+    }
+  }
+]
+  

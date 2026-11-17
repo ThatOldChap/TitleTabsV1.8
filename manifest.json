@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+
+  "name": "Arena Empower Smart Title Tabs",
+  "description": "Smart renaming of the title of a browser tab to be a more intelligent version compared to the default",
+  "version": "1.8",
+
+  "action": {
+    "default_icon": "icon_128.png",
+    "default_popup": "popup.html"
+  },
+
+  "icons": {
+    "128": "icon_128.png"
+  },
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "permissions": [
+    "declarativeNetRequest",
+    "scripting",
+    "storage",
+    "activeTab",
+    "clipboardWrite"
+  ],
+
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ]
+}
