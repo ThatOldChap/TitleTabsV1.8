@@ -9,6 +9,9 @@ const SELECTORS = Object.freeze({
 	vendorTitle: '#CPMainPage_frmSubTitleCommon_frmSubTitleMenu_lblMainMenu_Text > b',
 	itemBomTable: '#CPMainPage_frmBOM_dgBOM',
 	bomCostsTable: '#CPMainPage_dgBOM',
+	bomFieldCheckTable: '#CPMainPage_dgProposedBOM',
+	bomFieldCheckSelector: '#CPMenuBar_dlToolbar_FieldName',
+	bomFieldCheckReturnToolbarCell: '#CPMainPage_td_Change_Report_Toolbar_Return',
 	itemBomHeader: '#CPMainPage_frmBOM_lbl_Item_BOM_Header',
     ecoItemChangesPane: '#CPMainPage_frmSubTitleCommon_frmSubTitleMenu_lblMainMenu_Text > b',
 	ecoAllBomChangesTable: '#CPMainPage_frmBOMChanges_dgRedlines_BOMChanges_All',
@@ -17,10 +20,35 @@ const SELECTORS = Object.freeze({
 	projectDescription: '#CPMainPage_frmGeneral_dgGeneralFields_lblGeneralPage_Field_Value_1'
 });
 const BOM_COST_DELTA_COLUMN = 'DELTA ($)';
+const BOM_COST_UNIT_DELTA_COLUMN = 'UNIT COST DELTA ($CAD)';
 const BOM_COST_UOM_COLUMN = 'COST UOM';
 const BOM_LEAD_TIME_DELTA_COLUMN = 'LEAD TIME DELTA';
 const BOM_COST_FEATURES_SETTING = 'bomCostRollupFeaturesEnabled';
 const ITEM_BOM_FEATURES_SETTING = 'itemBomFeaturesEnabled';
+const BOM_FIELD_CHECK_ATTRIBUTES = [
+	'DESIGN COST PER UNIT (CAD)',
+	'DESIGN LEAD TIME (WEEKS)',
+	'PURCHASE COST PER UNIT (CAD)',
+	'PURCHASE LEAD TIME (WEEKS)',
+	'UNIT OF MEASURE',
+	'ITEM-WEIGHT(KG)'
+];
+const BOM_FIELD_CHECK_OUTPUT_COLUMNS = [
+	{ name: 'DESIGN LEAD TIME (WEEKS)', attribute: 'DESIGN LEAD TIME (WEEKS)' },
+	{ name: 'PURCHASE LEAD TIME (WEEKS)', attribute: 'PURCHASE LEAD TIME (WEEKS)' },
+	{ name: 'LEAD TIME DELTA', calculation: 'leadTimeDelta' },
+	{ name: 'EXT. DESIGN COST (CAD)', calculation: 'extendedDesignCost' },
+	{ name: 'EXT. PURCHASE COST (CAD)', calculation: 'extendedPurchaseCost' },
+	{ name: 'EXT. COST DELTA ($CAD)', calculation: 'extendedCostDelta' },
+	{ name: 'DESIGN COST PER UNIT (CAD)', attribute: 'DESIGN COST PER UNIT (CAD)' },
+	{ name: 'PURCHASE COST PER UNIT (CAD)', attribute: 'PURCHASE COST PER UNIT (CAD)' },
+	{ name: 'UNIT COST DELTA ($CAD)', calculation: 'unitCostDelta' },
+	{ name: 'COST UOM', attribute: 'UNIT OF MEASURE' },
+	{ name: 'UNIT OF MEASURE', attribute: 'UNIT OF MEASURE' },
+	{ name: 'ITEM-WEIGHT(KG)', attribute: 'ITEM-WEIGHT(KG)' }
+];
+const BOM_FIELD_CHECK_STORAGE_KEY = '__omnifyTitleTabsBomFieldCheckRollup';
+const bomFieldCheckValueBuffer = new WeakMap();
 const DRAWING_VIEW_COLUMNS = ['Refdes', 'Qty', 'UoM', 'Part Number', 'Rev', 'Description'];
 const DRAWING_VIEW_COLUMN_ORDER = [
 	'Refdes', 'Qty', 'UoM', 'Part Number', 'Rev', 'Current Rev', 'Description'
@@ -140,7 +168,11 @@ function updateNoWrapColumnWidth(table, columnName) {
 	const columnIndex = findTableColumnIndex(table, columnName);
 	if (columnIndex < 0) return;
 
-	let longestCell = null;
+	const headerRow = getTableHeaderRow(table);
+	if (headerRow) {
+		const headerCell = headerRow.cells[columnIndex];
+		if (headerCell) headerCell.style.whiteSpace = 'nowrap';
+	}
 	for (const row of table.rows) {
 		if (row === getTableHeaderRow(table) ||
 			row.dataset.bomCostGroupHeader ||
@@ -148,11 +180,8 @@ function updateNoWrapColumnWidth(table, columnName) {
 		const cell = table.id === 'CPMainPage_dgBOM'
 			? getBomCostsCell(table, row, columnName)
 			: row.cells[columnIndex];
-		if (cell && (!longestCell || cell.textContent.length > longestCell.textContent.length)) {
-			longestCell = cell;
-		}
+		if (cell) cell.style.whiteSpace = 'nowrap';
 	}
-	if (longestCell) longestCell.style.whiteSpace = 'nowrap';
 }
 
 function updateBomColumns(tableSelector) {
@@ -561,7 +590,8 @@ function getTableHeaderRow(table) {
 	if (!table?.rows?.length) return null;
 	if (table.id !== 'CPMainPage_dgBOM') {
 		return Array.from(table.rows).find((row) =>
-			!row.dataset.omnifyBomRevisionGroupHeader
+			!row.dataset.omnifyBomRevisionGroupHeader &&
+			!row.dataset.omnifyBomFieldCheckGroupHeader
 		) || table.rows[0];
 	}
 
@@ -614,6 +644,1007 @@ function updateBomTableColumns() {
 		updateBomCostsWeightValues(table);
 		updateBomCostsContributorHighlight(table);
 	}
+	if (window.location.pathname.toLowerCase().includes('/apps/desktop/change/reports/bomfieldcheck')) {
+		if (addBomFieldCheckCostRollupControl()) return;
+		formatBomFieldCheckTable();
+		const bomFieldCheckTable = document.querySelector(SELECTORS.bomFieldCheckTable);
+		if (bomFieldCheckTable?.dataset.omnifyBomFieldCheckCostRollup) {
+			addBomFieldCheckContributorControl(bomFieldCheckTable);
+			updateBomFieldCheckContributorHighlight(bomFieldCheckTable);
+		}
+	}
+}
+
+function formatBomFieldCheckTable() {
+	const table = document.querySelector(SELECTORS.bomFieldCheckTable);
+	if (!table) return;
+	if (table.dataset.omnifyBomFieldCheckGroupedHeaders) return;
+	updateNoWrapColumnWidth(table, 'Description');
+	moveTableColumnAfter(table, 'UoM', 'Qty');
+}
+
+function addBomFieldCheckCostRollupControl() {
+	const table = document.querySelector(SELECTORS.bomFieldCheckTable);
+
+	let button = document.getElementById('omnify-bom-field-check-cost-rollup');
+	if (!button) {
+		const returnToolbarCell = document.querySelector(SELECTORS.bomFieldCheckReturnToolbarCell);
+		if (!returnToolbarCell) return false;
+
+		const toolbarCell = returnToolbarCell.cloneNode(false);
+		toolbarCell.removeAttribute('id');
+		toolbarCell.removeAttribute('title');
+		toolbarCell.removeAttribute('onclick');
+		button = document.createElement('button');
+		button.id = 'omnify-bom-field-check-cost-rollup';
+		button.type = 'button';
+		button.setAttribute('aria-disabled', 'false');
+		button.textContent = 'Cost Rollup';
+		button.style.marginLeft = '6px';
+		button.addEventListener('click', startBomFieldCheckCostRollup);
+		button.addEventListener('keydown', (event) => {
+			if (event.key !== 'Enter' && event.key !== ' ') return;
+			event.preventDefault();
+			startBomFieldCheckCostRollup();
+		});
+		toolbarCell.appendChild(button);
+		returnToolbarCell.after(toolbarCell);
+	}
+
+	try {
+		const workflow = loadBomFieldCheckWorkflow();
+		if (workflow?.active) {
+			const label = workflow.phase === 'reset'
+				? 'Preparing...'
+				: `Loading ${workflow.index + 1}/6...`;
+			setBomFieldCheckButtonState(label, true);
+			resumeBomFieldCheckCostRollup();
+			return true;
+		}
+	} catch (error) {
+		console.error('Could not inspect BOM Field Check Cost Rollup state:', error);
+		setBomFieldCheckButtonState('Cost Rollup (error)', false);
+		return true;
+	}
+
+	if (table?.dataset.omnifyBomFieldCheckCostRollup) {
+		setBomFieldCheckButtonState('Cost Rollup', true);
+		return false;
+	}
+	resumeBomFieldCheckCostRollup();
+	return false;
+}
+
+function getBomFieldCheckWorkflowKey() {
+	return `${BOM_FIELD_CHECK_STORAGE_KEY}:${window.location.pathname}`;
+}
+
+function clearBomFieldCheckWorkflowsOutsideReport() {
+	if (window.location.pathname.toLowerCase().includes('/apps/desktop/change/reports/bomfieldcheck')) return;
+	try {
+		const keyPrefix = `${BOM_FIELD_CHECK_STORAGE_KEY}:`;
+		for (let index = sessionStorage.length - 1; index >= 0; index--) {
+			const key = sessionStorage.key(index);
+			if (key?.startsWith(keyPrefix)) sessionStorage.removeItem(key);
+		}
+	} catch (error) {
+		console.error('Could not clear the inactive BOM Field Check Cost Rollup state:', error);
+	}
+}
+
+function loadBomFieldCheckWorkflow() {
+	const serializedWorkflow = sessionStorage.getItem(getBomFieldCheckWorkflowKey());
+	return serializedWorkflow ? JSON.parse(serializedWorkflow) : null;
+}
+
+function saveBomFieldCheckWorkflow(workflow) {
+	sessionStorage.setItem(getBomFieldCheckWorkflowKey(), JSON.stringify(workflow));
+}
+
+function setBomFieldCheckButtonState(label, disabled) {
+	const button = document.getElementById('omnify-bom-field-check-cost-rollup');
+	if (!button) return;
+	button.textContent = label;
+	button.disabled = disabled;
+}
+
+function isBomFieldCheckPostbackActive() {
+	return document.documentElement?.getAttribute('data-omnify-title-tabs-async-postback') === 'true';
+}
+
+function startBomFieldCheckCostRollup() {
+	const button = document.getElementById('omnify-bom-field-check-cost-rollup');
+	if (!button || button.disabled) return;
+
+	try {
+		const workflow = {
+			active: true,
+			phase: 'reset',
+			index: 0,
+			captures: [],
+			awaitingPageLoad: false
+		};
+		saveBomFieldCheckWorkflow(workflow);
+		globalThis.__omnifyBomFieldCheckResumeStarted = true;
+		setBomFieldCheckButtonState('Preparing...', true);
+		continueBomFieldCheckCostRollup(workflow);
+	} catch (error) {
+		console.error('Could not start BOM Field Check Cost Rollup:', error);
+		setBomFieldCheckButtonState('Cost Rollup (error)', false);
+	}
+}
+
+function resumeBomFieldCheckCostRollup() {
+	let workflow;
+	try {
+		workflow = loadBomFieldCheckWorkflow();
+	} catch (error) {
+		console.error('Could not restore BOM Field Check Cost Rollup:', error);
+		setBomFieldCheckButtonState('Cost Rollup (error)', false);
+		return;
+	}
+	if (!workflow?.active) return;
+
+	const label = workflow.phase === 'reset'
+		? 'Preparing...'
+		: `Loading ${workflow.index + 1}/6...`;
+	setBomFieldCheckButtonState(label, true);
+	if (globalThis.__omnifyBomFieldCheckResumeStarted) return;
+	if (!document.querySelector(SELECTORS.bomFieldCheckSelector) ||
+		!document.querySelector(SELECTORS.bomFieldCheckTable)) return;
+	globalThis.__omnifyBomFieldCheckResumeStarted = true;
+
+	if (!workflow.awaitingPageLoad) {
+		try {
+			sessionStorage.removeItem(getBomFieldCheckWorkflowKey());
+		} catch (error) {
+			console.error('Could not clear the incomplete BOM Field Check Cost Rollup state:', error);
+		}
+		setBomFieldCheckButtonState('Cost Rollup', false);
+		return;
+	}
+
+	if (workflow.awaitingPageLoad) {
+		const resumeAfterPageLoad = (attempt = 0) => {
+			try {
+				const currentWorkflow = loadBomFieldCheckWorkflow();
+				if (!currentWorkflow?.active || !currentWorkflow.awaitingPageLoad) return;
+				if (isBomFieldCheckPostbackActive() && attempt < 150) {
+					window.setTimeout(() => resumeAfterPageLoad(attempt + 1), 200);
+					return;
+				}
+				if (isBomFieldCheckPostbackActive()) {
+					throw new Error('Timed out waiting for the Proposed BOM update to finish.');
+				}
+				finishBomFieldCheckPostback(currentWorkflow);
+			} catch (error) {
+				failBomFieldCheckCostRollup(error);
+			}
+		};
+		window.setTimeout(() => resumeAfterPageLoad(), 500);
+		return;
+	}
+	continueBomFieldCheckCostRollup(workflow);
+}
+
+function finishBomFieldCheckPostback(workflow) {
+	workflow.awaitingPageLoad = false;
+	workflow.waitingForPostback = false;
+	if (workflow.phase === 'reset') {
+		workflow.phase = 'rollup';
+		workflow.attributeLoadRetries = 0;
+		saveBomFieldCheckWorkflow(workflow);
+		continueBomFieldCheckCostRollup(workflow);
+		return;
+	}
+	saveBomFieldCheckWorkflow(workflow);
+	captureBomFieldCheckAttribute(workflow);
+}
+
+function getBomFieldCheckOption(selector, attribute) {
+	if (!selector) return null;
+	const expectedLabel = normalizeBomFieldCheckOptionLabel(attribute);
+	return Array.from(selector.options).find((option) =>
+		normalizeBomFieldCheckOptionLabel(option.textContent) === expectedLabel
+	) || null;
+}
+
+function normalizeBomFieldCheckOptionLabel(label) {
+	return label
+		.replace(/^ATTRIBUTE\s*:\s*/i, '')
+		.replace(/[^A-Z0-9]/gi, '')
+		.toUpperCase();
+}
+
+function isBomFieldCheckOptionSelected(selector, option, attribute) {
+	const selectedOption = selector?.options?.[selector.selectedIndex];
+	return selectedOption === option ||
+		normalizeBomFieldCheckOptionLabel(selectedOption?.textContent || '') ===
+			normalizeBomFieldCheckOptionLabel(attribute);
+}
+
+function continueBomFieldCheckCostRollup(workflow, postbackWaitStartedAt = Date.now()) {
+	if (!workflow.active) return;
+	if (isBomFieldCheckPostbackActive()) {
+		if (Date.now() - postbackWaitStartedAt >= 30000) {
+			failBomFieldCheckCostRollup(new Error('Timed out waiting for the current Proposed BOM update.'));
+			return;
+		}
+		window.setTimeout(() =>
+			continueBomFieldCheckCostRollup(workflow, postbackWaitStartedAt),
+		100);
+		return;
+	}
+
+	if (workflow.phase === 'reset') {
+		const selector = document.querySelector(SELECTORS.bomFieldCheckSelector);
+		const lifecycleOption = getBomFieldCheckOption(selector, 'LIFECYCLE');
+		if (!selector || !lifecycleOption) {
+			failBomFieldCheckCostRollup(new Error('Could not find the "Lifecycle" option.'));
+			return;
+		}
+		if (isBomFieldCheckOptionSelected(selector, lifecycleOption, 'LIFECYCLE')) {
+			workflow.phase = 'rollup';
+			saveBomFieldCheckWorkflow(workflow);
+			continueBomFieldCheckCostRollup(workflow);
+			return;
+		}
+
+		setBomFieldCheckButtonState('Preparing...', true);
+		requestBomFieldCheckOption(workflow, selector, lifecycleOption);
+		return;
+	}
+	if (!workflow.phase) workflow.phase = 'rollup';
+
+	if (workflow.index >= BOM_FIELD_CHECK_ATTRIBUTES.length) {
+		completeBomFieldCheckCostRollup(workflow);
+		return;
+	}
+
+	const selector = document.querySelector(SELECTORS.bomFieldCheckSelector);
+	const attribute = BOM_FIELD_CHECK_ATTRIBUTES[workflow.index];
+	const option = getBomFieldCheckOption(selector, attribute);
+	if (!selector || !option) {
+		failBomFieldCheckCostRollup(new Error(`Could not find the "${attribute}" option.`));
+		return;
+	}
+
+	setBomFieldCheckButtonState(`Loading ${workflow.index + 1}/6...`, true);
+	if (isBomFieldCheckOptionSelected(selector, option, attribute)) {
+		captureBomFieldCheckAttribute(workflow);
+		return;
+	}
+
+	requestBomFieldCheckOption(workflow, selector, option);
+}
+
+function requestBomFieldCheckOption(workflow, selector, option) {
+	if (!document.querySelector(SELECTORS.bomFieldCheckTable)) {
+		failBomFieldCheckCostRollup(new Error('The Proposed BOM table is not available.'));
+		return;
+	}
+	workflow.awaitingPageLoad = true;
+	workflow.waitingForPostback = true;
+	saveBomFieldCheckWorkflow(workflow);
+	selector.value = option.value;
+	selector.dispatchEvent(new Event('change', { bubbles: true }));
+	saveBomFieldCheckWorkflow(workflow);
+}
+
+function captureBomFieldCheckAttribute(
+	workflow,
+	postbackWaitStartedAt = Date.now()
+) {
+	if (!workflow.active || workflow.waitingForPostback) return;
+	if (isBomFieldCheckPostbackActive()) {
+		if (Date.now() - postbackWaitStartedAt >= 30000) {
+			failBomFieldCheckCostRollup(new Error('Timed out waiting for the selected attribute to load.'));
+			return;
+		}
+		window.setTimeout(() =>
+			captureBomFieldCheckAttribute(workflow, postbackWaitStartedAt),
+		100);
+		return;
+	}
+	const table = document.querySelector(SELECTORS.bomFieldCheckTable);
+	const headerRow = table && Array.from(table.rows).find((row) =>
+		Array.from(row.cells).some((cell) =>
+			normalizeBomColumnName(cell.textContent) === 'FIELD'
+		)
+	);
+	if (!table || !headerRow) {
+		failBomFieldCheckCostRollup(new Error('Could not read the Proposed BOM table headers.'));
+		return;
+	}
+
+	const fieldIndex = Array.from(headerRow.cells).findIndex((cell) =>
+		normalizeBomColumnName(cell.textContent) === 'FIELD'
+	);
+	const oldValueIndex = Array.from(headerRow.cells).findIndex((cell) =>
+		normalizeBomColumnName(cell.textContent) === 'OLD VALUE'
+	);
+	const newValueIndex = Array.from(headerRow.cells).findIndex((cell) =>
+		normalizeBomColumnName(cell.textContent) === 'NEW VALUE'
+	);
+	if (fieldIndex < 0 || oldValueIndex < 0 || newValueIndex < 0) {
+		failBomFieldCheckCostRollup(new Error('The Proposed BOM table is missing Field, Old Value, or New Value.'));
+		return;
+	}
+
+	const rows = Array.from(table.rows)
+		.slice(Array.from(table.rows).indexOf(headerRow) + 1)
+		.filter((row) => row.cells.length > Math.max(fieldIndex, oldValueIndex, newValueIndex));
+	const expectedField = BOM_FIELD_CHECK_ATTRIBUTES[workflow.index];
+	const normalizeCapturedField = (field) => field
+		.replace(/^ATTRIBUTE\s*:\s*/i, '')
+		.replace(/[^A-Z0-9]/gi, '')
+		.toUpperCase();
+	const expectedFieldName = normalizeCapturedField(expectedField);
+	const hasMatchingField = rows.some((row) => {
+		const field = row.cells[fieldIndex].textContent.trim().replace(/\s+/g, ' ');
+		return field && normalizeCapturedField(field) === expectedFieldName;
+	});
+	if (!hasMatchingField) {
+		if ((workflow.attributeLoadRetries || 0) >= 15) {
+			workflow.attributeLoadRetries = 0;
+			failBomFieldCheckCostRollup(new Error(
+				`The Proposed BOM did not show the "${expectedField}" field after the dropdown postback.`
+			));
+			return;
+		}
+		workflow.attributeLoadRetries = (workflow.attributeLoadRetries || 0) + 1;
+		saveBomFieldCheckWorkflow(workflow);
+		window.setTimeout(() => captureBomFieldCheckAttribute(workflow), 200);
+		return;
+	}
+	workflow.attributeLoadRetries = 0;
+	const values = rows.map((row) => {
+		const field = row.cells[fieldIndex].textContent.trim().replace(/\s+/g, ' ').toUpperCase();
+		const matchesAttribute = !field ||
+			normalizeCapturedField(field) === expectedFieldName;
+		return {
+			oldValue: matchesAttribute ? row.cells[oldValueIndex].textContent.trim() : '',
+			newValue: matchesAttribute ? row.cells[newValueIndex].textContent.trim() : ''
+		};
+	});
+	workflow.captures[workflow.index] = values;
+	workflow.index++;
+	workflow.awaitingPageLoad = false;
+	workflow.waitingForPostback = false;
+	try {
+		saveBomFieldCheckWorkflow(workflow);
+		continueBomFieldCheckCostRollup(workflow);
+	} catch (error) {
+		failBomFieldCheckCostRollup(error);
+	}
+}
+
+function getBomFieldCheckCapturedValue(workflow, rowIndex, attribute) {
+	const attributeIndex = BOM_FIELD_CHECK_ATTRIBUTES.indexOf(attribute);
+	return workflow.captures[attributeIndex]?.[rowIndex]?.newValue || '';
+}
+
+function setBomFieldCheckLeadTimeDeltaValue(cell, value) {
+	const difference = Number(value.toFixed(10));
+	if (difference === 0) {
+		cell.textContent = '';
+		cell.style.color = '';
+		return;
+	}
+
+	cell.textContent = `${difference > 0 ? '+' : '-'}${formatLeadTime(String(Math.abs(difference)))}`;
+	cell.style.color = difference > 0 ? 'red' : 'green';
+}
+
+function completeBomFieldCheckCostRollup(workflow) {
+	try {
+		const table = document.querySelector(SELECTORS.bomFieldCheckTable);
+		const headerRow = table && Array.from(table.rows).find((row) =>
+			Array.from(row.cells).some((cell) =>
+				normalizeBomColumnName(cell.textContent) === 'FIELD'
+			)
+		);
+		if (!table || !headerRow) throw new Error('Could not update the Proposed BOM table.');
+
+		const sourceHeaderCells = Array.from(headerRow.cells);
+		const oldValueIndex = sourceHeaderCells.findIndex((cell) =>
+			normalizeBomColumnName(cell.textContent) === 'OLD VALUE'
+		);
+		const quantityIndex = sourceHeaderCells.findIndex((cell) =>
+			normalizeBomColumnName(cell.textContent) === 'QTY'
+		);
+		const firstDataRowIndex = Array.from(table.rows).indexOf(headerRow) + 1;
+		const dataRows = Array.from(table.rows).slice(firstDataRowIndex)
+			.filter((row) => row.cells.length > oldValueIndex);
+		if (oldValueIndex < 0 || quantityIndex < 0 ||
+			workflow.captures.some((capture) => capture.length !== dataRows.length)) {
+			throw new Error('The Proposed BOM rows changed while collecting attribute values.');
+		}
+
+		const activeColumnIndexes = ['FIELD', 'OLD VALUE', 'NEW VALUE']
+			.map((columnName) => sourceHeaderCells.findIndex((cell) =>
+				normalizeBomColumnName(cell.textContent) === columnName
+			))
+			.filter((index) => index >= 0)
+			.sort((left, right) => right - left);
+		for (const row of [headerRow, ...dataRows]) {
+			for (const columnIndex of activeColumnIndexes) {
+				row.cells[columnIndex]?.remove();
+			}
+		}
+
+		const headerSourceCell = headerRow.cells[0];
+
+		for (let rowIndex = 0; rowIndex < dataRows.length; rowIndex++) {
+			for (const column of BOM_FIELD_CHECK_OUTPUT_COLUMNS) {
+				const cell = dataRows[rowIndex].cells[0].cloneNode(false);
+				cell.removeAttribute('id');
+				cell.dataset.omnifyBomFieldCheckColumn = column.name;
+				if (column.attribute) {
+					const capturedValue = getBomFieldCheckCapturedValue(
+						workflow,
+						rowIndex,
+						column.attribute
+					);
+					cell.textContent = capturedValue &&
+						['DESIGN COST PER UNIT (CAD)', 'PURCHASE COST PER UNIT (CAD)']
+							.includes(column.attribute)
+						? formatCurrency(capturedValue)
+						: capturedValue;
+				} else {
+					const quantity = parseCurrencyValue(dataRows[rowIndex].cells[quantityIndex].textContent);
+					const designCost = parseCurrencyValue(getBomFieldCheckCapturedValue(
+						workflow,
+						rowIndex,
+						'DESIGN COST PER UNIT (CAD)'
+					));
+					const purchaseCost = parseCurrencyValue(getBomFieldCheckCapturedValue(
+						workflow,
+						rowIndex,
+						'PURCHASE COST PER UNIT (CAD)'
+					));
+					const designLeadTime = parseLeadTimeValue(getBomFieldCheckCapturedValue(
+						workflow,
+						rowIndex,
+						'DESIGN LEAD TIME (WEEKS)'
+					));
+					const purchaseLeadTime = parseLeadTimeValue(getBomFieldCheckCapturedValue(
+						workflow,
+						rowIndex,
+						'PURCHASE LEAD TIME (WEEKS)'
+					));
+					const difference = column.calculation === 'leadTimeDelta'
+						? designLeadTime === null || purchaseLeadTime === null
+							? null
+							: purchaseLeadTime - designLeadTime
+						: column.calculation === 'unitCostDelta'
+							? designCost === null || purchaseCost === null
+								? null
+								: purchaseCost - designCost
+							: quantity === null || designCost === null || purchaseCost === null
+								? null
+								: column.calculation === 'extendedDesignCost'
+									? quantity * designCost
+									: column.calculation === 'extendedPurchaseCost'
+										? quantity * purchaseCost
+										: quantity * (purchaseCost - designCost);
+					if (difference !== null) {
+						if (column.calculation === 'leadTimeDelta') {
+							setBomFieldCheckLeadTimeDeltaValue(cell, difference);
+						} else if (column.calculation === 'unitCostDelta' ||
+							column.calculation === 'extendedCostDelta') {
+							setBomCostsDeltaValue(cell, difference);
+						} else {
+							cell.textContent = formatCurrency(String(difference));
+						}
+					}
+				}
+				dataRows[rowIndex].appendChild(cell);
+			}
+		}
+		for (const column of BOM_FIELD_CHECK_OUTPUT_COLUMNS) {
+			const headerCell = headerSourceCell.cloneNode(false);
+			headerCell.removeAttribute('id');
+			headerCell.rowSpan = 1;
+			headerCell.colSpan = 1;
+			if (column.attribute && column.name !== 'COST UOM') {
+				headerCell.dataset.omnifyBomFieldCheckAttribute = column.attribute;
+			}
+			headerCell.dataset.omnifyBomFieldCheckColumn = column.name;
+			headerCell.textContent = column.name === 'UNIT OF MEASURE'
+				? 'UoM'
+				: column.name;
+			headerRow.appendChild(headerCell);
+		}
+		addBomFieldCheckInclusionColumn(table);
+		bomFieldCheckValueBuffer.set(table, {
+			attributes: BOM_FIELD_CHECK_ATTRIBUTES,
+			rows: workflow.captures.map((capture, attributeIndex) =>
+				capture.map((values) => ({
+					attribute: BOM_FIELD_CHECK_ATTRIBUTES[attributeIndex],
+					oldValue: values.oldValue,
+					newValue: values.newValue
+				}))
+			)
+		});
+		formatBomFieldCheckTable();
+		addBomFieldCheckGroupedHeaders(table);
+		updateBomFieldCheckTotalsRow(table);
+		table.dataset.omnifyBomFieldCheckCostRollup = 'true';
+		addBomFieldCheckContributorControl(table);
+		updateBomFieldCheckContributorHighlight(table);
+		sessionStorage.removeItem(getBomFieldCheckWorkflowKey());
+		setBomFieldCheckButtonState('Cost Rollup', true);
+	} catch (error) {
+		failBomFieldCheckCostRollup(error);
+	}
+}
+
+function addBomFieldCheckInclusionColumn(table) {
+	const headerRow = getTableHeaderRow(table);
+	if (!headerRow?.parentElement) {
+		throw new Error('Could not add the Proposed BOM totals checkboxes.');
+	}
+
+	let headerCell = headerRow.cells[0];
+	if (!headerCell?.dataset.omnifyBomFieldCheckIncludeColumn) {
+		headerCell = headerCell.cloneNode(false);
+		headerCell.removeAttribute('id');
+		headerCell.dataset.omnifyBomFieldCheckIncludeColumn = 'true';
+		headerCell.textContent = 'Include';
+		headerCell.style.textAlign = 'center';
+		headerCell.style.whiteSpace = 'nowrap';
+		headerRow.insertBefore(headerCell, headerRow.firstChild);
+	}
+
+	const partNumberIndex = Array.from(headerRow.cells).findIndex((cell) =>
+		cell.dataset.omnifyBomFieldCheckColumn === 'PART NUMBER' ||
+		normalizeBomColumnName(cell.textContent) === 'PART NUMBER'
+	);
+	for (const row of table.rows) {
+		if (row === headerRow || row.dataset.omnifyBomFieldCheckGroupHeader ||
+			row.dataset.omnifyBomFieldCheckTotalRow || row.cells.length !== headerRow.cells.length - 1) {
+			continue;
+		}
+
+		const cell = row.cells[0].cloneNode(false);
+		cell.removeAttribute('id');
+		cell.style.textAlign = 'center';
+		cell.style.whiteSpace = 'nowrap';
+		const partNumber = partNumberIndex > 0
+			? row.cells[partNumberIndex - 1]?.textContent.trim()
+			: '';
+		const checkbox = document.createElement('input');
+		checkbox.type = 'checkbox';
+		checkbox.checked = true;
+		checkbox.setAttribute(
+			'aria-label',
+			partNumber ? `Include ${partNumber} in totals` : 'Include row in totals'
+		);
+		checkbox.dataset.omnifyBomFieldCheckInclude = 'true';
+		checkbox.addEventListener('change', () => {
+			updateBomFieldCheckTotalsRow(table);
+			updateBomFieldCheckContributorHighlight(table);
+		});
+		cell.appendChild(checkbox);
+		row.insertBefore(cell, row.firstChild);
+	}
+}
+
+function addBomFieldCheckGroupedHeaders(table) {
+	const headerRow = getTableHeaderRow(table);
+	if (!headerRow?.parentElement) {
+		throw new Error('Could not build the Proposed BOM lead-time headers.');
+	}
+
+	const sourceCells = Array.from(headerRow.cells);
+	const topRow = document.createElement('tr');
+	const subRow = document.createElement('tr');
+	topRow.dataset.omnifyBomFieldCheckGroupHeader = 'true';
+	subRow.dataset.omnifyBomFieldCheckGroupHeader = 'true';
+	const groupDefinitions = [
+		{
+			title: 'Lead Times (Weeks)',
+			columns: [
+				'DESIGN LEAD TIME (WEEKS)',
+				'PURCHASE LEAD TIME (WEEKS)',
+				'LEAD TIME DELTA'
+			],
+			labels: ['Design', 'Last', 'Delta']
+		},
+		{
+			title: 'Total Ext. Costs ($CAD)',
+			columns: [
+				'EXT. DESIGN COST (CAD)',
+				'EXT. PURCHASE COST (CAD)',
+				'EXT. COST DELTA ($CAD)'
+			],
+			labels: ['Design', 'Last', 'Delta ($)']
+		},
+		{
+			title: 'Cost/UoM ($CAD)',
+			columns: [
+				'DESIGN COST PER UNIT (CAD)',
+				'PURCHASE COST PER UNIT (CAD)',
+				'UNIT COST DELTA ($CAD)',
+				'COST UOM'
+			],
+			labels: ['Design', 'Last', 'Delta ($)', 'UoM']
+		}
+	];
+	const addedGroups = new Set();
+	for (const sourceCell of sourceCells) {
+		const columnName = sourceCell.dataset.omnifyBomFieldCheckColumn ||
+			sourceCell.dataset.omnifyBomFieldCheckAttribute;
+		const group = groupDefinitions.find((definition) =>
+			definition.columns.includes(columnName)
+		);
+		if (group) {
+			if (addedGroups.has(group.title)) continue;
+			const groupCell = createBomCostsHeaderCell(sourceCell, group.title);
+			groupCell.colSpan = group.columns.length;
+			if (group.title === 'Lead Times (Weeks)') groupCell.style.whiteSpace = 'nowrap';
+			topRow.appendChild(groupCell);
+			for (let index = 0; index < group.columns.length; index++) {
+				const subHeaderSource = sourceCells.find((cell) =>
+					(cell.dataset.omnifyBomFieldCheckColumn ||
+						cell.dataset.omnifyBomFieldCheckAttribute) === group.columns[index]
+				);
+				if (!subHeaderSource) {
+					throw new Error(`The Proposed BOM "${group.title}" columns are missing.`);
+				}
+				subRow.appendChild(createBomCostsHeaderCell(subHeaderSource, group.labels[index]));
+			}
+			addedGroups.add(group.title);
+			continue;
+		}
+
+		const headerText = sourceCell.dataset.omnifyBomFieldCheckAttribute === 'UNIT OF MEASURE'
+			? 'UoM'
+			: sourceCell.dataset.omnifyBomFieldCheckAttribute === 'ITEM-WEIGHT(KG)'
+				? 'Weight (kg)'
+				: sourceCell.textContent;
+		const headerCell = createBomCostsHeaderCell(sourceCell, headerText);
+		headerCell.rowSpan = 2;
+		topRow.appendChild(headerCell);
+	}
+
+	if (addedGroups.size !== groupDefinitions.length) {
+		throw new Error('Could not build all Proposed BOM grouped columns.');
+	}
+	headerRow.parentElement.insertBefore(topRow, headerRow);
+	headerRow.parentElement.insertBefore(subRow, headerRow);
+	headerRow.style.display = 'none';
+	table.dataset.omnifyBomFieldCheckGroupedHeaders = 'true';
+}
+
+function updateBomFieldCheckTotalsRow(table) {
+	const headerRow = getTableHeaderRow(table);
+	if (!headerRow?.parentElement) return;
+
+	const allRows = Array.from(table.rows);
+	const headerIndex = allRows.indexOf(headerRow);
+	const dataRows = allRows.slice(headerIndex + 1).filter((row) =>
+		!row.dataset.omnifyBomFieldCheckGroupHeader &&
+		!row.dataset.omnifyBomFieldCheckTotalRow &&
+		row.cells.length === headerRow.cells.length
+	);
+	if (!dataRows.length) return;
+
+	let totalRow = table.querySelector('[data-omnify-bom-field-check-total-row]');
+	if (!totalRow) {
+		totalRow = document.createElement('tr');
+		totalRow.dataset.omnifyBomFieldCheckTotalRow = 'true';
+		for (const sourceCell of dataRows[0].cells) {
+			const cell = sourceCell.cloneNode(false);
+			cell.removeAttribute('id');
+			cell.textContent = '';
+			cell.style.fontWeight = 'bold';
+			cell.style.backgroundColor = '#e2f0d9';
+			totalRow.appendChild(cell);
+		}
+		headerRow.after(totalRow);
+	}
+	const totalCells = Array.from(totalRow.cells);
+	for (const cell of totalCells) {
+		if (cell.textContent) cell.textContent = '';
+		cell.style.color = '';
+	}
+	const includedRows = dataRows.filter((row) =>
+		row.querySelector('[data-omnify-bom-field-check-include]')?.checked !== false
+	);
+
+	const getColumnIndex = (key) => Array.from(headerRow.cells).findIndex((cell) =>
+		cell.dataset.omnifyBomFieldCheckAttribute === key ||
+		cell.dataset.omnifyBomFieldCheckColumn === key ||
+		normalizeBomColumnName(cell.textContent) === normalizeBomColumnName(key)
+	);
+	const partNumberIndex = getColumnIndex('PART NUMBER');
+	if (partNumberIndex >= 0) totalCells[partNumberIndex].textContent = 'Total(s):';
+
+	for (const columnName of ['DESIGN LEAD TIME (WEEKS)', 'PURCHASE LEAD TIME (WEEKS)']) {
+		const columnIndex = getColumnIndex(columnName);
+		if (columnIndex < 0) continue;
+
+		let maximum = null;
+		for (const row of includedRows) {
+			const value = parseLeadTimeValue(row.cells[columnIndex].textContent);
+			if (value !== null && (maximum === null || value > maximum)) maximum = value;
+		}
+		if (maximum !== null) {
+			totalCells[columnIndex].textContent = `Max: ${formatLeadTime(String(maximum))}`;
+			totalCells[columnIndex].style.whiteSpace = 'nowrap';
+		}
+	}
+
+	for (const columnName of ['EXT. DESIGN COST (CAD)', 'EXT. PURCHASE COST (CAD)', 'EXT. COST DELTA ($CAD)']) {
+		const columnIndex = getColumnIndex(columnName);
+		if (columnIndex < 0) continue;
+
+		let total = 0;
+		let hasValue = false;
+		for (const row of includedRows) {
+			const value = parseCurrencyValue(row.cells[columnIndex].textContent);
+			if (value === null) continue;
+			total += value;
+			hasValue = true;
+		}
+		if (!hasValue) continue;
+		if (columnName === 'EXT. COST DELTA ($CAD)') {
+			setBomCostsDeltaValue(totalCells[columnIndex], total);
+		} else {
+			totalCells[columnIndex].textContent = formatCurrency(String(total));
+		}
+	}
+
+	const weightIndex = getColumnIndex('ITEM-WEIGHT(KG)');
+	const quantityIndex = getColumnIndex('QTY');
+	if (weightIndex >= 0 && quantityIndex >= 0) {
+		let totalWeight = 0;
+		let hasWeight = false;
+		for (const row of includedRows) {
+			const weight = parseCurrencyValue(row.cells[weightIndex].textContent);
+			const quantity = parseCurrencyValue(row.cells[quantityIndex].textContent);
+			if (weight === null || quantity === null) continue;
+			totalWeight += weight * quantity;
+			hasWeight = true;
+		}
+		if (hasWeight) {
+			totalCells[weightIndex].textContent = `${totalWeight.toLocaleString('en-CA', {
+				minimumFractionDigits: 2,
+				maximumFractionDigits: 2
+			})} kg`;
+		}
+	}
+
+	if (!totalRow.isConnected) headerRow.after(totalRow);
+}
+
+function addBomFieldCheckContributorControl(table) {
+	if (!table?.parentElement) return;
+
+	let checkbox = document.querySelector('#bom-field-check-contributor-highlight');
+	if (!checkbox) {
+		const checkboxLabel = document.createElement('label');
+		checkboxLabel.style.display = 'inline-flex';
+		checkboxLabel.style.alignItems = 'center';
+		checkboxLabel.style.gap = '6px';
+		checkboxLabel.style.margin = '4px 8px 4px 0';
+		checkbox = document.createElement('input');
+		checkbox.type = 'checkbox';
+		checkbox.id = 'bom-field-check-contributor-highlight';
+		checkbox.addEventListener('change', () =>
+			updateBomFieldCheckContributorHighlight(
+				document.querySelector(SELECTORS.bomFieldCheckTable)
+			)
+		);
+		checkboxLabel.append(checkbox, document.createTextNode('Check Cost/Lead Time Contributors'));
+		table.parentElement.insertBefore(checkboxLabel, table);
+	}
+
+	if (document.querySelector('#bom-field-check-contributor-scaling')) return;
+	const scalingLabel = document.createElement('label');
+	scalingLabel.style.display = 'inline-flex';
+	scalingLabel.style.alignItems = 'center';
+	scalingLabel.style.gap = '4px';
+	scalingLabel.style.margin = '4px 0';
+	scalingLabel.appendChild(document.createTextNode('Scale: '));
+	const scalingSelect = document.createElement('select');
+	scalingSelect.id = 'bom-field-check-contributor-scaling';
+	for (const [value, text] of [['log', 'Logarithmic'], ['linear', 'Linear']]) {
+		const option = document.createElement('option');
+		option.value = value;
+		option.textContent = text;
+		scalingSelect.appendChild(option);
+	}
+	scalingSelect.value = 'linear';
+	scalingSelect.addEventListener('change', () =>
+		updateBomFieldCheckContributorHighlight(
+			document.querySelector(SELECTORS.bomFieldCheckTable)
+		)
+	);
+	scalingLabel.appendChild(scalingSelect);
+	const checkboxLabel = checkbox.closest('label');
+	if (checkboxLabel) checkboxLabel.after(scalingLabel);
+	else table.parentElement.insertBefore(scalingLabel, table);
+}
+
+function updateBomFieldCheckContributorHighlight(table) {
+	if (!table) return;
+	const headerRow = getTableHeaderRow(table);
+	if (!headerRow) return;
+	clearBomFieldCheckCellHighlights(table);
+
+	const valueGroups = [
+		['EXT. DESIGN COST (CAD)', 'EXT. PURCHASE COST (CAD)'],
+		['DESIGN LEAD TIME (WEEKS)', 'PURCHASE LEAD TIME (WEEKS)']
+	];
+	const columnIndexesByGroup = valueGroups.map((group) => group.map((columnName) =>
+		Array.from(headerRow.cells).findIndex((cell) =>
+			cell.dataset.omnifyBomFieldCheckColumn === columnName ||
+			cell.dataset.omnifyBomFieldCheckAttribute === columnName
+		)
+	));
+	const cellsByGroup = valueGroups.map(() => []);
+	const maxima = valueGroups.map(() => 0);
+	for (const row of table.rows) {
+		if (row === headerRow || row.dataset.omnifyBomFieldCheckGroupHeader ||
+			row.dataset.omnifyBomFieldCheckTotalRow) continue;
+
+		for (let groupIndex = 0; groupIndex < columnIndexesByGroup.length; groupIndex++) {
+			for (const columnIndex of columnIndexesByGroup[groupIndex]) {
+				if (columnIndex < 0) continue;
+				const cell = row.cells[columnIndex];
+				if (!cell) continue;
+				const value = parseCurrencyValue(cell.textContent);
+				const amount = value === null ? null : Math.max(0, value);
+				cellsByGroup[groupIndex].push({ cell, amount });
+				if (amount !== null) maxima[groupIndex] = Math.max(maxima[groupIndex], amount);
+			}
+		}
+	}
+
+	const checkbox = document.querySelector('#bom-field-check-contributor-highlight');
+	const enabled = Boolean(checkbox?.checked);
+	const scaling = document.querySelector('#bom-field-check-contributor-scaling')?.value;
+	for (let groupIndex = 0; groupIndex < cellsByGroup.length; groupIndex++) {
+		for (const { cell, amount } of cellsByGroup[groupIndex]) {
+			if (!cell.hasAttribute('data-bom-field-check-contributor-original-background')) {
+				cell.dataset.bomFieldCheckContributorOriginalBackground = cell.style.backgroundColor;
+				cell.dataset.bomFieldCheckContributorOriginalColor = cell.style.color;
+			}
+			if (!enabled || amount === null) {
+				cell.style.backgroundColor = cell.dataset.bomFieldCheckContributorOriginalBackground;
+				cell.style.color = cell.dataset.bomFieldCheckContributorOriginalColor;
+				cell.removeAttribute('data-bom-field-check-contributor-original-background');
+				cell.removeAttribute('data-bom-field-check-contributor-original-color');
+				continue;
+			}
+
+			const maximum = maxima[groupIndex];
+			const scale = maximum > 0
+				? scaling === 'linear' ? amount / maximum : Math.log1p(amount) / Math.log1p(maximum)
+				: 0;
+			const background = interpolateBomCostColor(scale);
+			cell.style.backgroundColor = `rgb(${background.join(', ')})`;
+			cell.style.color = getBomCostContributorTextColor(background);
+		}
+	}
+	updateBomFieldCheckIncludedCellHighlight(table);
+}
+
+function updateBomFieldCheckIncludedCellHighlight(table) {
+	const headerRow = getTableHeaderRow(table);
+	if (!headerRow) return;
+
+	const columns = [
+		{ name: 'DESIGN LEAD TIME (WEEKS)', isLeadTime: true, includeGreen: true },
+		{ name: 'PURCHASE LEAD TIME (WEEKS)', isLeadTime: true, includeGreen: true },
+		{ name: 'EXT. DESIGN COST (CAD)', isLeadTime: false, includeGreen: true },
+		{ name: 'EXT. PURCHASE COST (CAD)', isLeadTime: false, includeGreen: true },
+		{ name: 'DESIGN COST PER UNIT (CAD)', isLeadTime: false, includeGreen: false },
+		{ name: 'PURCHASE COST PER UNIT (CAD)', isLeadTime: false, includeGreen: false }
+	];
+	const columnIndexes = columns.map((column) =>
+		Array.from(headerRow.cells).findIndex((cell) =>
+			cell.dataset.omnifyBomFieldCheckColumn === column.name ||
+			cell.dataset.omnifyBomFieldCheckAttribute === column.name
+		)
+	);
+	const quantityIndex = Array.from(headerRow.cells).findIndex((cell) =>
+		cell.dataset.omnifyBomFieldCheckColumn === 'QTY' ||
+		normalizeBomColumnName(cell.textContent) === 'QTY'
+	);
+	const includedRows = Array.from(table.rows).filter((row) =>
+		row !== headerRow &&
+		!row.dataset.omnifyBomFieldCheckGroupHeader &&
+		!row.dataset.omnifyBomFieldCheckTotalRow &&
+		row.querySelector('[data-omnify-bom-field-check-include]')?.checked !== false
+	);
+	const leadTimeMaxima = columns.map((column, columnIndex) => {
+		if (!column.isLeadTime || columnIndexes[columnIndex] < 0) return null;
+		let maximum = null;
+		for (const row of includedRows) {
+			const value = parseLeadTimeValue(row.cells[columnIndexes[columnIndex]]?.textContent);
+			if (value !== null && (maximum === null || value > maximum)) maximum = value;
+		}
+		return maximum;
+	});
+	const contributorHighlightEnabled = Boolean(
+		document.querySelector('#bom-field-check-contributor-highlight')?.checked
+	);
+	const applyHighlight = (cell, color) => {
+		if (!cell.hasAttribute('data-omnify-bom-field-check-highlight-original-background')) {
+			cell.dataset.omnifyBomFieldCheckHighlightOriginalBackground = cell.style.backgroundColor;
+			cell.dataset.omnifyBomFieldCheckHighlightOriginalColor = cell.style.color;
+		}
+		cell.style.backgroundColor = color;
+		cell.style.color = getBomCostContributorTextColorFromHex(color);
+	};
+	const totalRow = table.querySelector('[data-omnify-bom-field-check-total-row]');
+	for (let columnPosition = 0; columnPosition < columns.length; columnPosition++) {
+		if (!columns[columnPosition].isLeadTime) continue;
+		const columnIndex = columnIndexes[columnPosition];
+		const cell = columnIndex >= 0 ? totalRow?.cells[columnIndex] : null;
+		const value = cell?.textContent.trim().replace(/^MAX:\s*/i, '');
+		if (cell && parseLeadTimeValue(value) !== null) applyHighlight(cell, '#f4cccc');
+	}
+
+	for (const row of table.rows) {
+		if (row === headerRow || row.dataset.omnifyBomFieldCheckGroupHeader ||
+			row.dataset.omnifyBomFieldCheckTotalRow) continue;
+
+		const includeRow = row.querySelector('[data-omnify-bom-field-check-include]')?.checked !== false;
+		for (let columnPosition = 0; columnPosition < columnIndexes.length; columnPosition++) {
+			const columnIndex = columnIndexes[columnPosition];
+			if (columnIndex < 0) continue;
+			const cell = row.cells[columnIndex];
+			if (!cell) continue;
+			const column = columns[columnPosition];
+			const quantity = quantityIndex >= 0
+				? parseCurrencyValue(row.cells[quantityIndex]?.textContent)
+				: null;
+			const leadTimeValue = column.isLeadTime
+				? parseLeadTimeValue(cell.textContent)
+				: null;
+			const isMaximum = includeRow &&
+				leadTimeMaxima[columnPosition] !== null &&
+				leadTimeValue === leadTimeMaxima[columnPosition];
+			const costValue = column.isLeadTime ? null : parseCurrencyValue(cell.textContent);
+			const isZero = column.isLeadTime
+				? leadTimeValue === 0
+				: quantity !== null && quantity > 0 && costValue === 0;
+			const highlightColor = isZero
+				? '#fff2cc'
+				: isMaximum
+					? '#f4cccc'
+					: column.includeGreen && includeRow && !contributorHighlightEnabled
+						? '#e2f0d9'
+						: null;
+			if (highlightColor) applyHighlight(cell, highlightColor);
+		}
+	}
+}
+
+function clearBomFieldCheckCellHighlights(table) {
+	for (const cell of table.querySelectorAll(
+		'[data-omnify-bom-field-check-highlight-original-background]'
+	)) {
+		cell.style.backgroundColor = cell.dataset.omnifyBomFieldCheckHighlightOriginalBackground;
+		cell.style.color = cell.dataset.omnifyBomFieldCheckHighlightOriginalColor;
+		cell.removeAttribute('data-omnify-bom-field-check-highlight-original-background');
+		cell.removeAttribute('data-omnify-bom-field-check-highlight-original-color');
+	}
+}
+
+function failBomFieldCheckCostRollup(error) {
+	console.error('BOM Field Check Cost Rollup failed:', error);
+	try {
+		sessionStorage.removeItem(getBomFieldCheckWorkflowKey());
+	} catch (storageError) {
+		console.error('Could not clear the BOM Field Check Cost Rollup state:', storageError);
+	}
+	setBomFieldCheckButtonState('Cost Rollup (error)', false);
 }
 
 function addDrawingViewControl(table) {
@@ -888,6 +1919,7 @@ function addBomCostsContributorControl(table) {
 function updateBomCostsContributorHighlight(table) {
 	const checkbox = document.querySelector('#bom-cost-contributor-highlight');
 	if (!table) return;
+	clearBomCostsStatusHighlight(table);
 
 	const valueGroups = [
 		['EXT. DESIGN COST (CAD)', 'EXT. PURCHASE COST (CAD)'],
@@ -939,6 +1971,84 @@ function updateBomCostsContributorHighlight(table) {
 			cell.style.color = getBomCostContributorTextColor(background);
 		}
 	}
+	highlightBomCostsStatusValues(table);
+}
+
+function clearBomCostsStatusHighlight(table) {
+	for (const cell of table.querySelectorAll('[data-bom-cost-status-original-background]')) {
+		cell.style.backgroundColor = cell.dataset.bomCostStatusOriginalBackground;
+		cell.style.color = cell.dataset.bomCostStatusOriginalColor;
+		cell.removeAttribute('data-bom-cost-status-original-background');
+		cell.removeAttribute('data-bom-cost-status-original-color');
+	}
+}
+
+function highlightBomCostsStatusValues(table) {
+	const leadTimeColumns = [
+		'DESIGN LEAD TIME (WEEKS)',
+		'PURCHASE LEAD TIME (WEEKS)'
+	];
+	const costColumns = [
+		'EXT. DESIGN COST (CAD)',
+		'EXT. PURCHASE COST (CAD)',
+		'DESIGN COST PER UNIT (CAD)',
+		'PURCHASE COST PER UNIT (CAD)'
+	];
+	const headerRow = getTableHeaderRow(table);
+	const totalRow = Array.from(table.rows).find((row) =>
+		Array.from(row.cells).some((cell) =>
+			cell.textContent.trim().replace(/\s+/g, ' ').toUpperCase() === 'TOTAL(S):'
+		)
+	);
+	if (!headerRow) return;
+
+	const dataRows = Array.from(table.rows).filter((row) =>
+		row !== headerRow && row !== totalRow && !row.dataset.bomCostGroupHeader
+	);
+	const leadTimeMaxima = new Map();
+	for (const columnName of leadTimeColumns) {
+		let maximum = null;
+		for (const row of dataRows) {
+			const value = parseLeadTimeValue(getBomCostsCell(table, row, columnName)?.textContent);
+			if (value !== null && (maximum === null || value > maximum)) maximum = value;
+		}
+		leadTimeMaxima.set(columnName, maximum);
+	}
+
+	for (const row of dataRows) {
+		const quantity = parseCurrencyValue(getBomCostsCell(table, row, 'Qty')?.textContent);
+		for (const columnName of leadTimeColumns) {
+			const cell = getBomCostsCell(table, row, columnName);
+			const value = parseLeadTimeValue(cell?.textContent);
+			if (!cell || value === null) continue;
+
+			const color = value === 0
+				? '#fff2cc'
+				: value === leadTimeMaxima.get(columnName) ? '#f4cccc' : '';
+			if (color) setBomCostsStatusHighlight(cell, color);
+		}
+		if (quantity === null || quantity <= 0) continue;
+
+		for (const columnName of costColumns) {
+			const cell = getBomCostsCell(table, row, columnName);
+			if (!cell || parseCurrencyValue(cell.textContent) !== 0) continue;
+			setBomCostsStatusHighlight(cell, '#fff2cc');
+		}
+	}
+	for (const columnName of leadTimeColumns) {
+		const cell = totalRow ? getBomCostsCell(table, totalRow, columnName) : null;
+		const value = cell?.textContent.trim().replace(/^MAX:\s*/i, '');
+		if (cell && parseLeadTimeValue(value) !== null) {
+			setBomCostsStatusHighlight(cell, '#f4cccc');
+		}
+	}
+}
+
+function setBomCostsStatusHighlight(cell, color) {
+	cell.dataset.bomCostStatusOriginalBackground = cell.style.backgroundColor;
+	cell.dataset.bomCostStatusOriginalColor = cell.style.color;
+	cell.style.backgroundColor = color;
+	cell.style.color = getBomCostContributorTextColorFromHex(color);
 }
 
 function interpolateBomCostColor(scale) {
@@ -962,6 +2072,13 @@ function getBomCostContributorTextColor(background) {
 	const whiteContrast = 1.05 / (luminance + 0.05);
 	const blackContrast = (luminance + 0.05) / 0.05;
 	return whiteContrast > blackContrast ? 'white' : 'black';
+}
+
+function getBomCostContributorTextColorFromHex(background) {
+	const channels = background.slice(1).match(/.{2}/g).map((channel) =>
+		parseInt(channel, 16)
+	);
+	return getBomCostContributorTextColor(channels);
 }
 
 function updateBomCostsTotals(table) {
@@ -1010,6 +2127,7 @@ function updateBomCostsTotals(table) {
 		updateBomCostsCostColumns(table, headerRow, totalsRow, group);
 	}
 	updateBomCostsLeadTimeDelta(table, headerRow, totalsRow);
+	updateBomCostsUnitDelta(table, hasCostUom, headerRow, totalsRow);
 	updateBomCostsUomColumn(table, hasCostUom, headerRow, totalsRow);
 	updateBomCostsDelta(table, groups.length === costGroups.length, headerRow, totalsRow);
 
@@ -1017,6 +2135,7 @@ function updateBomCostsTotals(table) {
 	if (findTableColumnIndex(table, BOM_LEAD_TIME_DELTA_COLUMN) >= 0) {
 		formattedColumns.push(BOM_LEAD_TIME_DELTA_COLUMN);
 	}
+	if (hasCostUom) formattedColumns.push(BOM_COST_UNIT_DELTA_COLUMN);
 	if (groups.length === costGroups.length) formattedColumns.push(BOM_COST_DELTA_COLUMN);
 	if (hasCostUom) formattedColumns.push(BOM_COST_UOM_COLUMN);
 	if (findTableColumnIndex(table, 'ITEM-WEIGHT(KG)') >= 0) formattedColumns.push('ITEM-WEIGHT(KG)');
@@ -1168,13 +2287,66 @@ function updateBomCostsUomColumn(table, includeUom, headerRow, totalsRow) {
 			? BOM_COST_UOM_COLUMN
 			: row === totalsRow ? '' : sourceCell.textContent.trim();
 		if (costUomCell.textContent !== uomText) costUomCell.textContent = uomText;
+		const unitDeltaCell = getBomCostsCell(table, row, BOM_COST_UNIT_DELTA_COLUMN);
 		const purchaseCell = getBomCostsCell(table, row, 'PURCHASE COST PER UNIT (CAD)');
-		if (purchaseCell && costUomCell !== purchaseCell.nextElementSibling) {
-			purchaseCell.after(costUomCell);
+		const anchorCell = unitDeltaCell || purchaseCell;
+		if (anchorCell && costUomCell !== anchorCell.nextElementSibling) {
+			anchorCell.after(costUomCell);
 		}
 		if (purchaseCell) {
 			setBomCostsCellDefaultBackground(table, row, costUomCell);
 		}
+	}
+}
+
+function updateBomCostsUnitDelta(table, includeUnitDelta, headerRow, totalsRow) {
+	const existingDeltaIndex = findTableColumnIndex(table, BOM_COST_UNIT_DELTA_COLUMN);
+	if (!includeUnitDelta) {
+		if (existingDeltaIndex >= 0) {
+			for (const row of table.rows) {
+				if (!row.dataset.bomCostGroupHeader) {
+					getBomCostsCell(table, row, BOM_COST_UNIT_DELTA_COLUMN)?.remove();
+				}
+			}
+		}
+		return;
+	}
+
+	if (findTableColumnIndex(table, 'DESIGN COST PER UNIT (CAD)') < 0 ||
+		findTableColumnIndex(table, 'PURCHASE COST PER UNIT (CAD)') < 0) return;
+
+	for (const row of table.rows) {
+		if (row.dataset.bomCostGroupHeader) continue;
+		let deltaCell = getBomCostsCell(table, row, BOM_COST_UNIT_DELTA_COLUMN);
+		const purchaseCell = getBomCostsCell(table, row, 'PURCHASE COST PER UNIT (CAD)');
+		if (!deltaCell) {
+			if (!purchaseCell) continue;
+			deltaCell = purchaseCell.cloneNode(false);
+			deltaCell.removeAttribute('id');
+			deltaCell.style.width = '';
+			deltaCell.dataset.bomCostColumnKey = normalizeBomColumnName(BOM_COST_UNIT_DELTA_COLUMN);
+			deltaCell.textContent = row === headerRow ? BOM_COST_UNIT_DELTA_COLUMN : '';
+		}
+
+		if (purchaseCell && deltaCell !== purchaseCell.nextElementSibling) {
+			purchaseCell.after(deltaCell);
+		}
+		setBomCostsCellDefaultBackground(table, row, deltaCell);
+		if (row === headerRow || row === totalsRow) {
+			if (row === totalsRow && deltaCell.textContent) deltaCell.textContent = '';
+			continue;
+		}
+
+		const designValue = parseCurrencyValue(
+			getBomCostsCell(table, row, 'DESIGN COST PER UNIT (CAD)')?.textContent
+		);
+		const purchaseValue = parseCurrencyValue(purchaseCell?.textContent);
+		if (designValue === null || purchaseValue === null) {
+			deltaCell.textContent = '';
+			deltaCell.style.color = '';
+			continue;
+		}
+		setBomCostsDeltaValue(deltaCell, purchaseValue - designValue);
 	}
 }
 
@@ -1258,7 +2430,7 @@ function setBomCostsDeltaValue(cell, value) {
 	const formattedValue = Math.abs(value).toLocaleString('en-CA', {
 		minimumFractionDigits: 2,
 		maximumFractionDigits: 2
-	}).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
+	});
 	const sign = value > 0 ? '+' : value < 0 ? '-' : '';
 	const text = `${sign}$${formattedValue}`;
 	const color = value < 0 ? 'green' : value > 0 ? 'red' : '';
@@ -1403,6 +2575,7 @@ function orderBomCostsColumns(table) {
 		BOM_COST_DELTA_COLUMN,
 		'DESIGN COST PER UNIT (CAD)',
 		'PURCHASE COST PER UNIT (CAD)',
+		BOM_COST_UNIT_DELTA_COLUMN,
 		BOM_COST_UOM_COLUMN,
 		'ITEM-WEIGHT(KG)',
 		'Description'
@@ -1445,7 +2618,7 @@ function addBomCostsGroupedHeaders(table) {
 
 	const headerParent = headerRow.parentElement;
 	const groupDefinitions = [
-		{ name: 'Budget', lead: 'DESIGN LEAD TIME (WEEKS)', unit: 'DESIGN COST PER UNIT (CAD)', extended: 'EXT. DESIGN COST (CAD)' },
+		{ name: 'Design', lead: 'DESIGN LEAD TIME (WEEKS)', unit: 'DESIGN COST PER UNIT (CAD)', extended: 'EXT. DESIGN COST (CAD)' },
 		{ name: 'Last', lead: 'PURCHASE LEAD TIME (WEEKS)', unit: 'PURCHASE COST PER UNIT (CAD)', extended: 'EXT. PURCHASE COST (CAD)' }
 	].filter((group) =>
 		findTableColumnIndex(table, group.lead) >= 0 &&
@@ -1453,9 +2626,10 @@ function addBomCostsGroupedHeaders(table) {
 		findTableColumnIndex(table, group.extended) >= 0
 	);
 	const hasDelta = findTableColumnIndex(table, BOM_COST_DELTA_COLUMN) >= 0;
+	const hasUnitDelta = findTableColumnIndex(table, BOM_COST_UNIT_DELTA_COLUMN) >= 0;
 	const hasCostUom = findTableColumnIndex(table, BOM_COST_UOM_COLUMN) >= 0;
 	const hasLeadTimeDelta = findTableColumnIndex(table, BOM_LEAD_TIME_DELTA_COLUMN) >= 0;
-	const signature = `${groupDefinitions.map((group) => group.name).join('|')}|leadDelta:${hasLeadTimeDelta}|delta:${hasDelta}|uom:${hasCostUom}`;
+	const signature = `${groupDefinitions.map((group) => group.name).join('|')}|leadDelta:${hasLeadTimeDelta}|delta:${hasDelta}|unitDelta:${hasUnitDelta}|uom:${hasCostUom}`;
 	const existingGroupRows = Array.from(headerParent.children).filter((row) =>
 		row.dataset?.bomCostGroupHeader
 	);
@@ -1470,10 +2644,7 @@ function addBomCostsGroupedHeaders(table) {
 		{
 			title: 'Lead Times (Weeks)',
 			columns: [
-				...groupDefinitions.map((group) => ({
-					name: group.name === 'Budget' ? 'Design' : group.name,
-					field: group.lead
-				})),
+				...groupDefinitions.map((group) => ({ name: group.name, field: group.lead })),
 				...(findTableColumnIndex(table, BOM_LEAD_TIME_DELTA_COLUMN) >= 0
 					? [{ name: 'Delta', field: BOM_LEAD_TIME_DELTA_COLUMN }]
 					: [])
@@ -1490,6 +2661,7 @@ function addBomCostsGroupedHeaders(table) {
 			title: 'Cost/UoM ($CAD)',
 			columns: [
 				...groupDefinitions.map((group) => ({ name: group.name, field: group.unit })),
+				...(hasUnitDelta ? [{ name: 'Delta ($)', field: BOM_COST_UNIT_DELTA_COLUMN }] : []),
 				...(hasCostUom ? [{ name: 'UoM', field: BOM_COST_UOM_COLUMN }] : [])
 			]
 		}
@@ -1579,6 +2751,7 @@ function sizeBomCostsColumns(table, columnNames) {
 }
 
 function startTitleUpdates() {
+	clearBomFieldCheckWorkflowsOutsideReport();
 	updateTitle();
 	updateBomTableColumns();
 	registerPartialPostbackUpdates();
@@ -1655,12 +2828,19 @@ function startTitleUpdates() {
 }
 
 function registerPartialPostbackUpdates() {
-	const pageRequestManager = globalThis.Sys?.WebForms?.PageRequestManager?.getInstance?.();
-	if (!pageRequestManager || globalThis.__omnifyTitleTabsPostbackHandlerRegistered) return;
+	if (globalThis.__omnifyTitleTabsPostbackHandlerRegistered) return;
 
-	pageRequestManager.add_endRequest(() => {
+	window.addEventListener('omnify-title-tabs-postback-end', () => {
 		updateTitle();
 		updateBomTableColumns();
+		try {
+			const workflow = loadBomFieldCheckWorkflow();
+			if (workflow?.active && (workflow.awaitingPageLoad || workflow.waitingForPostback)) {
+				finishBomFieldCheckPostback(workflow);
+			}
+		} catch (error) {
+			failBomFieldCheckCostRollup(error);
+		}
 	});
 	globalThis.__omnifyTitleTabsPostbackHandlerRegistered = true;
 }

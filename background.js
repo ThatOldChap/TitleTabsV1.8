@@ -93,6 +93,39 @@ async function injectIntoTab(tabId, tabUrl, configuredApps) {
 		const isConfiguredApp = configuredApps.some((app) => tab.origin === app.origin &&
 			(tab.pathname === app.path.slice(0, -1) || tab.pathname.startsWith(app.path)));
 		if (!isConfiguredApp) return;
+		if (tab.pathname.toLowerCase().includes('/apps/desktop/change/reports/bomfieldcheck')) {
+			await chrome.scripting.executeScript({
+				target: { tabId },
+				world: 'MAIN',
+				func: () => {
+					if (window.__omnifyTitleTabsPostbackBridgeInstalled) return;
+					window.__omnifyTitleTabsPostbackBridgeInstalled = true;
+
+					const publishPostbackState = (isActive) => {
+						const root = document.documentElement;
+						const wasActive = root?.getAttribute(
+							'data-omnify-title-tabs-async-postback'
+						) === 'true';
+						root?.setAttribute('data-omnify-title-tabs-async-postback', String(isActive));
+						if (wasActive && !isActive) {
+							window.dispatchEvent(new Event('omnify-title-tabs-postback-end'));
+						}
+					};
+					const attachToPageRequestManager = () => {
+						const manager = window.Sys?.WebForms?.PageRequestManager?.getInstance?.();
+						if (!manager) {
+							window.setTimeout(attachToPageRequestManager, 100);
+							return;
+						}
+						publishPostbackState(manager.get_isInAsyncPostBack?.() === true);
+						manager.add_beginRequest(() => publishPostbackState(true));
+						manager.add_endRequest(() => publishPostbackState(false));
+					};
+
+					attachToPageRequestManager();
+				}
+			});
+		}
 		await chrome.scripting.executeScript({
 			target: { tabId },
 			files: ['jquery-3.6.0.js', 'titleChanger.js']
