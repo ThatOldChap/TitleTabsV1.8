@@ -22,8 +22,8 @@ const SELECTORS = Object.freeze({
 const QUICK_SEARCH_TARGETS = [
 	{ label: 'Items', objectType: 0 },
 	{ label: 'ECOs', objectType: 1 },
-	{ label: 'Vendors', objectType: 6 },
 	{ label: 'Vendor Items', objectType: 3 },
+	{ label: 'Vendors', objectType: 6 },
 	{ label: 'CAPAs', objectType: 5 },
 	{ label: 'Projects', objectType: 2 }
 ];
@@ -60,6 +60,9 @@ const bomFieldCheckValueBuffer = new WeakMap();
 const DRAWING_VIEW_COLUMNS = ['Refdes', 'Qty', 'UoM', 'Part Number', 'Rev', 'Description'];
 const DRAWING_VIEW_COLUMN_ORDER = [
 	'Refdes', 'Qty', 'UoM', 'Part Number', 'Rev', 'Current Rev', 'Description'
+];
+const ECO_DRAWING_VIEW_COLUMN_ORDER = [
+	'Find', 'Refdes', 'Qty', 'UoM', 'Part Number', 'Rev', 'Description', 'Vendors'
 ];
 const drawingViewOriginalCellOrders = new WeakMap();
 let bomCostRollupFeaturesEnabled = true;
@@ -634,6 +637,7 @@ function updateBomTableColumns() {
 		const table = document.querySelector(SELECTORS.itemBomTable);
 		if (table && !table.hidden) updateDescriptionWidth(SELECTORS.itemBomTable);
 	}
+	if (itemBomFeaturesSettingLoaded) addEcoDrawingViewControl();
 
 	const path = window.location.pathname.split('/').filter(Boolean);
 	const reportPath = path.slice(-5, -1).map((segment) => segment.toLowerCase());
@@ -1682,25 +1686,37 @@ function addDrawingViewControl(table) {
 }
 
 function createDrawingViewModeButton(id, label, isActive) {
+	return createViewModeButton(id, label, isActive, () => {
+		toggleViewModeButtons(
+			'omnify-standard-view',
+			'omnify-drawing-view',
+			id === 'omnify-drawing-view',
+			(isDrawingView) => updateDrawingViewColumns(
+				document.querySelector(SELECTORS.itemBomTable),
+				isDrawingView
+			)
+		);
+	});
+}
+
+function createViewModeButton(id, label, isActive, onClick) {
 	const button = document.createElement('button');
 	button.id = id;
 	button.type = 'button';
 	button.textContent = label;
 	button.style.marginLeft = '6px';
-	button.addEventListener('click', () => {
-		const isDrawingView = id === 'omnify-drawing-view';
-		const standardButton = document.getElementById('omnify-standard-view');
-		const drawingButton = document.getElementById('omnify-drawing-view');
-		if (!standardButton || !drawingButton) return;
-		setDrawingViewButtonState(standardButton, !isDrawingView);
-		setDrawingViewButtonState(drawingButton, isDrawingView);
-		updateDrawingViewColumns(
-			document.querySelector(SELECTORS.itemBomTable),
-			isDrawingView
-		);
-	});
+	button.addEventListener('click', onClick);
 	setDrawingViewButtonState(button, isActive);
 	return button;
+}
+
+function toggleViewModeButtons(standardButtonId, drawingButtonId, isDrawingView, updateColumns) {
+	const standardButton = document.getElementById(standardButtonId);
+	const drawingButton = document.getElementById(drawingButtonId);
+	if (!standardButton || !drawingButton) return;
+	setDrawingViewButtonState(standardButton, !isDrawingView);
+	setDrawingViewButtonState(drawingButton, isDrawingView);
+	updateColumns(isDrawingView);
 }
 
 function setDrawingViewButtonState(button, isActive) {
@@ -1710,6 +1726,99 @@ function setDrawingViewButtonState(button, isActive) {
 	button.style.borderColor = isActive ? '#163a5a' : '';
 	button.style.boxShadow = isActive ? 'inset 0 2px 4px rgba(0, 0, 0, 0.35)' : '';
 	button.style.fontWeight = isActive ? '600' : '';
+}
+
+function addEcoDrawingViewControl() {
+	const goSummaryCell = document.getElementById(
+		'CPMainPage_frmBOMChanges_td_Redlines_BOM_GoSummary'
+	);
+	if (!goSummaryCell) return;
+
+	let controlsCell = document.getElementById('omnify-eco-view-controls');
+	if (!controlsCell) {
+		controlsCell = document.createElement('td');
+		controlsCell.id = 'omnify-eco-view-controls';
+		controlsCell.append(
+			createEcoDrawingViewModeButton('omnify-eco-standard-view', 'Standard View', true),
+			createEcoDrawingViewModeButton('omnify-eco-drawing-view', 'Drawing View', false)
+		);
+		goSummaryCell.insertAdjacentElement('afterend', controlsCell);
+	}
+
+	const standardButton = document.getElementById('omnify-eco-standard-view');
+	const drawingButton = document.getElementById('omnify-eco-drawing-view');
+	if (!standardButton || !drawingButton) return;
+	const isDrawingView = drawingButton.getAttribute('aria-pressed') === 'true';
+	setDrawingViewButtonState(standardButton, !isDrawingView);
+	setDrawingViewButtonState(drawingButton, isDrawingView);
+	updateEcoDrawingViewColumns(isDrawingView);
+}
+
+function createEcoDrawingViewModeButton(id, label, isActive) {
+	return createViewModeButton(id, label, isActive, () => {
+		toggleViewModeButtons(
+			'omnify-eco-standard-view',
+			'omnify-eco-drawing-view',
+			id === 'omnify-eco-drawing-view',
+			updateEcoDrawingViewColumns
+		);
+	});
+}
+
+function updateEcoDrawingViewColumns(isActive) {
+	const tables = [
+		document.querySelector(SELECTORS.ecoAllBomChangesTable),
+		document.querySelector(SELECTORS.ecoItemBomChangesTable)
+	].filter(Boolean);
+
+	for (const table of tables) {
+		restoreDrawingViewCellOrder(table);
+		rememberDrawingViewCellOrder(table);
+
+		let changeColumnIndex = findTableColumnIndex(table, 'Change');
+		if (changeColumnIndex < 0) continue;
+		if (isActive) {
+			reorderEcoDrawingViewColumns(table, changeColumnIndex);
+			changeColumnIndex = findTableColumnIndex(table, 'Change');
+		}
+
+		const visibleColumnIndexes = new Set();
+		for (let columnIndex = 0; columnIndex <= changeColumnIndex; columnIndex++) {
+			visibleColumnIndexes.add(columnIndex);
+		}
+		if (isActive) {
+			for (const columnName of ECO_DRAWING_VIEW_COLUMN_ORDER) {
+				const columnIndex = findTableColumnIndex(table, columnName);
+				if (columnIndex >= 0) visibleColumnIndexes.add(columnIndex);
+			}
+		}
+		const vendorColumnIndex = findTableColumnIndex(table, 'Vendors');
+
+		for (const row of table.rows) {
+			if (row.dataset.omnifyBomRevisionGroupHeader) continue;
+			for (let columnIndex = 0; columnIndex < row.cells.length; columnIndex++) {
+				const cell = row.cells[columnIndex];
+				if (!cell.hasAttribute('data-omnify-eco-view-original-display')) {
+					cell.setAttribute('data-omnify-eco-view-original-display', cell.style.display);
+				}
+				const shouldHide = isActive
+					? !visibleColumnIndexes.has(columnIndex)
+					: vendorColumnIndex >= 0 && columnIndex === vendorColumnIndex;
+				cell.style.display = shouldHide
+					? 'none'
+					: cell.getAttribute('data-omnify-eco-view-original-display');
+			}
+		}
+	}
+}
+
+function reorderEcoDrawingViewColumns(table, changeColumnIndex) {
+	let anchorColumnIndex = changeColumnIndex;
+	for (const columnName of ECO_DRAWING_VIEW_COLUMN_ORDER) {
+		if (findTableColumnIndex(table, columnName) < 0) continue;
+		moveTableColumnAfterIndex(table, columnName, anchorColumnIndex);
+		anchorColumnIndex = findTableColumnIndex(table, columnName);
+	}
 }
 
 function updateDrawingViewColumns(table, isActive) {
@@ -1778,8 +1887,8 @@ function updateDrawingViewColumns(table, isActive) {
 			if (!cell.hasAttribute('data-omnify-drawing-view-original-display')) {
 				cell.setAttribute('data-omnify-drawing-view-original-display', cell.style.display);
 			}
-			const isProtectedLeadingColumn = columnIndex >= 0 && columnIndex < 2;
-			const shouldHide = !isProtectedLeadingColumn &&
+			const isEditControlColumn = columnIndex >= 0 && columnIndex === editColumnIndex;
+			const shouldHide = !isEditControlColumn &&
 				((!isActive && vendorColumnIndex >= 0 && columnIndex === vendorColumnIndex) ||
 					(isActive && !visibleColumnIndexes.has(columnIndex) &&
 						!cell.dataset.omnifyBomRevisionGroupCell));
@@ -1813,7 +1922,6 @@ function restoreDrawingViewCellOrder(table) {
 
 function reorderDrawingViewColumns(table, columnNames) {
 	let anchorColumnIndex = findEditControlColumnIndex(table);
-	if (anchorColumnIndex < 0) return;
 	for (const columnName of columnNames) {
 		if (findTableColumnIndex(table, columnName) < 0) continue;
 		moveTableColumnAfterIndex(table, columnName, anchorColumnIndex);
@@ -1823,12 +1931,17 @@ function reorderDrawingViewColumns(table, columnNames) {
 
 function moveTableColumnAfterIndex(table, columnName, targetColumnIndex) {
 	const columnIndex = findTableColumnIndex(table, columnName);
-	if (columnIndex < 0 || targetColumnIndex < 0 ||
+	if (columnIndex < 0 || targetColumnIndex < -1 ||
 		columnIndex === targetColumnIndex || columnIndex === targetColumnIndex + 1) return;
 
 	for (const row of table.rows) {
 		if (row.dataset.omnifyBomRevisionGroupHeader) continue;
 		const cell = row.cells[columnIndex];
+		if (!cell) continue;
+		if (targetColumnIndex === -1) {
+			row.insertBefore(cell, row.cells[0] || null);
+			continue;
+		}
 		const targetCell = row.cells[targetColumnIndex];
 		if (cell && targetCell) row.insertBefore(cell, targetCell.nextElementSibling);
 	}
@@ -1841,7 +1954,7 @@ function findEditControlColumnIndex(table) {
 		const editCellIndex = Array.from(row.cells).findIndex(hasEditControl);
 		if (editCellIndex >= 0) return editCellIndex;
 	}
-	return 1;
+	return -1;
 }
 
 function findTableHeaderColumnIndex(table, columnName) {
