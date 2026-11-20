@@ -2900,6 +2900,7 @@ function addQuickSearchButtons() {
 		const button = document.createElement('button');
 		button.type = 'button';
 		button.textContent = target.label;
+		button.className = 'omnify-title-tabs-quick-search-button';
 		Object.assign(button.style, {
 			background: '#f5f8fc',
 			border: '1px solid #b7c9dc',
@@ -2908,6 +2909,7 @@ function addQuickSearchButtons() {
 			cursor: 'pointer',
 			font: '12px Arial, sans-serif',
 			padding: '4px 6px',
+			transition: 'background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease',
 			whiteSpace: 'nowrap'
 		});
 		button.setAttribute(
@@ -2915,6 +2917,21 @@ function addQuickSearchButtons() {
 			`javascript:LaunchTopSearch('/Empower/Apps/Desktop/Search/QuickFind.aspx?obj=${target.objectType}', 'ObjectHeaderWidget_frmSearchWidget_tbxTopSearchTerm', '_blank')`
 		);
 		controls.appendChild(button);
+	}
+
+	if (!document.getElementById('omnifyTitleTabsQuickSearchHoverStyle')) {
+		const hoverStyle = document.createElement('style');
+		hoverStyle.id = 'omnifyTitleTabsQuickSearchHoverStyle';
+		hoverStyle.textContent = `
+			#omnifyTitleTabsQuickSearchButtons .omnify-title-tabs-quick-search-button:hover,
+			#omnifyTitleTabsQuickSearchButtons .omnify-title-tabs-quick-search-button:focus-visible {
+				background-color: #1f4e79 !important;
+				border-color: #163a5a !important;
+				box-shadow: 0 0 0 2px rgba(31, 78, 121, 0.25) !important;
+				color: #fff !important;
+			}
+		`;
+		document.head.appendChild(hoverStyle);
 	}
 
 	controlsContentCell.appendChild(controls);
