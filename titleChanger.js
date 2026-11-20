@@ -19,6 +19,14 @@ const SELECTORS = Object.freeze({
 	projectName: '#CPMainPage_frmSubTitleCommon_frmSubTitleMenu_lblMainMenu_Text',
 	projectDescription: '#CPMainPage_frmGeneral_dgGeneralFields_lblGeneralPage_Field_Value_1'
 });
+const QUICK_SEARCH_TARGETS = [
+	{ label: 'Items', objectType: 0 },
+	{ label: 'ECOs', objectType: 1 },
+	{ label: 'Vendors', objectType: 6 },
+	{ label: 'Vendor Items', objectType: 3 },
+	{ label: 'CAPAs', objectType: 5 },
+	{ label: 'Projects', objectType: 2 }
+];
 const BOM_COST_DELTA_COLUMN = 'DELTA ($)';
 const BOM_COST_UNIT_DELTA_COLUMN = 'UNIT COST DELTA ($CAD)';
 const BOM_COST_UOM_COLUMN = 'COST UOM';
@@ -2750,10 +2758,62 @@ function sizeBomCostsColumns(table, columnNames) {
 	}
 }
 
+function addQuickSearchButtons() {
+	const commonSearchBox = document.querySelector('table.CommonSearchBox');
+	const searchBoxRow = commonSearchBox?.rows[0];
+	if (!searchBoxRow ||
+		document.getElementById('omnifyTitleTabsQuickSearchButtons')) return;
+
+	const controlsCell = document.createElement('td');
+	const controlsTable = document.createElement('table');
+	controlsTable.style.borderCollapse = 'separate';
+	controlsTable.style.borderSpacing = '4px 0';
+	controlsTable.style.width = 'auto';
+	const controlsRow = controlsTable.insertRow();
+	const controlsContentCell = controlsRow.insertCell();
+	controlsContentCell.style.padding = '0';
+	const controls = document.createElement('div');
+	controls.id = 'omnifyTitleTabsQuickSearchButtons';
+	controls.setAttribute('role', 'group');
+	controls.setAttribute('aria-label', 'Search by database');
+	Object.assign(controls.style, {
+		display: 'flex',
+		flexWrap: 'nowrap',
+		gap: '4px',
+		width: 'max-content'
+	});
+
+	for (const target of QUICK_SEARCH_TARGETS) {
+		const button = document.createElement('button');
+		button.type = 'button';
+		button.textContent = target.label;
+		Object.assign(button.style, {
+			background: '#f5f8fc',
+			border: '1px solid #b7c9dc',
+			borderRadius: '3px',
+			color: '#174a73',
+			cursor: 'pointer',
+			font: '12px Arial, sans-serif',
+			padding: '4px 6px',
+			whiteSpace: 'nowrap'
+		});
+		button.setAttribute(
+			'onclick',
+			`javascript:LaunchTopSearch('/Empower/Apps/Desktop/Search/QuickFind.aspx?obj=${target.objectType}', 'ObjectHeaderWidget_frmSearchWidget_tbxTopSearchTerm', '_blank')`
+		);
+		controls.appendChild(button);
+	}
+
+	controlsContentCell.appendChild(controls);
+	controlsCell.appendChild(controlsTable);
+	searchBoxRow.appendChild(controlsCell);
+}
+
 function startTitleUpdates() {
 	clearBomFieldCheckWorkflowsOutsideReport();
 	updateTitle();
 	updateBomTableColumns();
+	addQuickSearchButtons();
 	registerPartialPostbackUpdates();
 	window.addEventListener('load', registerPartialPostbackUpdates, { once: true });
 	chrome.storage.sync.get(ITEM_BOM_FEATURES_SETTING)
@@ -2817,6 +2877,7 @@ function startTitleUpdates() {
 						if (recentUpdates.length >= 50 && reloadAfterMutationStorm()) return;
 					}
 					updateBomTableColumns();
+					addQuickSearchButtons();
 				} finally {
 					reconnecting = false;
 					if (document.body?.isConnected) observer.observe(document.body, observerOptions);
