@@ -22,9 +22,9 @@ const SELECTORS = Object.freeze({
 const QUICK_SEARCH_TARGETS = [
 	{ label: 'Items', objectType: 0 },
 	{ label: 'ECOs', objectType: 1 },
-	{ label: 'Vendor Items', objectType: 3 },
-	{ label: 'Vendors', objectType: 6 },
-	{ label: 'CAPAs', objectType: 5 },
+	{ label: 'Vendor Items', objectType: 5 },
+	{ label: 'Vendors', objectType: 3 },
+	{ label: 'CAPAs', objectType: 4 },
 	{ label: 'Projects', objectType: 2 }
 ];
 const BOM_COST_DELTA_COLUMN = 'DELTA ($)';
@@ -613,6 +613,43 @@ function getTableHeaderRow(table) {
 	) || table.rows[0];
 }
 
+function sortEcoBomByFind(table) {
+	const headerRow = getTableHeaderRow(table);
+	const findColumnIndex = findTableColumnIndex(table, 'Find');
+	const findHeader = findColumnIndex >= 0 ? headerRow?.cells[findColumnIndex] : null;
+	if (!findHeader?.classList.contains('Header') ||
+		!findHeader.classList.contains('Sort')) return;
+
+	const ascending = findHeader.classList.contains('asc');
+	const descending = findHeader.classList.contains('desc');
+	if (!ascending && !descending) return;
+
+	const rows = Array.from(headerRow.parentElement.rows)
+		.filter((row) => row !== headerRow &&
+			!row.dataset.omnifyBomRevisionGroupHeader &&
+			!row.dataset.omnifyBomFieldCheckGroupHeader);
+	const getFindNumber = (row) => {
+		const cell = row.cells[findColumnIndex];
+		if (!cell) return 0;
+		const currentValue = cell.querySelector('td.RedlineIsData')?.textContent?.trim();
+		const previousValue = cell.querySelector('td.RedlineWasData')?.textContent?.trim();
+		const value = currentValue || previousValue || cell.textContent.trim();
+		const number = Number(value);
+		return value && Number.isFinite(number) ? number : 0;
+	};
+	const orderedRows = rows
+		.map((row, index) => ({ row, index, findNumber: getFindNumber(row) }))
+		.sort((left, right) =>
+			(left.findNumber - right.findNumber) * (ascending ? 1 : -1) ||
+			left.index - right.index
+		)
+		.map(({ row }) => row);
+
+	if (orderedRows.some((row, index) => row !== rows[index])) {
+		for (const row of orderedRows) headerRow.parentElement.appendChild(row);
+	}
+}
+
 function updateBomTableColumns() {
 	if (itemBomFeaturesSettingLoaded && itemBomFeaturesEnabled) {
 		updateBomColumns(SELECTORS.ecoAllBomChangesTable);
@@ -631,7 +668,10 @@ function updateBomTableColumns() {
 	}
 	for (const tableSelector of [SELECTORS.ecoAllBomChangesTable, SELECTORS.ecoItemBomChangesTable]) {
 		const table = document.querySelector(tableSelector);
-		if (table && !table.hidden) updateDescriptionWidth(tableSelector);
+		if (table && !table.hidden) {
+			updateDescriptionWidth(tableSelector);
+			sortEcoBomByFind(table);
+		}
 	}
 	if (getElementText(SELECTORS.itemBomHeader) === 'Parts List/BOM') {
 		const table = document.querySelector(SELECTORS.itemBomTable);
