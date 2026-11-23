@@ -175,6 +175,112 @@ function updateDescriptionWidth(tableSelector) {
 	updateNoWrapColumnWidth(table, 'Description');
 }
 
+function getBomColumnHeaderCell(table, columnIndex) {
+	const headerRow = getTableHeaderRow(table);
+	if (!headerRow || columnIndex < 0) return null;
+	const groupHeaderRow = Array.from(table.rows).find((row) =>
+		row.dataset.omnifyBomRevisionGroupHeader
+	);
+	if (!groupHeaderRow) return headerRow.cells[columnIndex] || null;
+
+	return [...groupHeaderRow.cells, ...headerRow.cells].find((cell) =>
+		!cell.dataset.omnifyBomRevisionGroupCell &&
+		Number(cell.dataset.omnifyColumnIndex) === columnIndex
+	) || headerRow.cells[columnIndex] || null;
+}
+
+function addBomColumnResizer(table, columnName) {
+	const columnIndex = findTableColumnIndex(table, columnName);
+	const headerCell = getBomColumnHeaderCell(table, columnIndex);
+	if (!headerCell) return;
+
+	if (headerCell.dataset.omnifyBomColumnResizer !== 'true') {
+		headerCell.dataset.omnifyBomColumnResizer = 'true';
+		if (getComputedStyle(headerCell).position === 'static') {
+			headerCell.style.position = 'relative';
+		}
+
+		const resizer = document.createElement('span');
+		resizer.setAttribute('role', 'separator');
+		resizer.setAttribute('aria-orientation', 'vertical');
+		resizer.setAttribute('aria-label', `Resize ${columnName} column`);
+		resizer.setAttribute('aria-valuemin', '80');
+		resizer.setAttribute('aria-valuemax', '1200');
+		resizer.tabIndex = 0;
+		Object.assign(resizer.style, {
+			position: 'absolute',
+			top: '0',
+			right: '-3px',
+			bottom: '0',
+			width: '7px',
+			borderRight: '2px solid rgba(80, 100, 120, 0.35)',
+			boxSizing: 'border-box',
+			cursor: 'col-resize',
+			touchAction: 'none',
+			zIndex: '2'
+		});
+
+		const setWidth = (width) => {
+			const resizedWidth = Math.round(Math.max(80, Math.min(1200, width)));
+			headerCell.dataset.omnifyBomColumnResized = 'true';
+			resizer.setAttribute('aria-valuenow', String(resizedWidth));
+			headerCell.style.width = `${resizedWidth}px`;
+			for (const row of table.rows) {
+				if (row === getTableHeaderRow(table) ||
+					row.dataset.omnifyBomRevisionGroupHeader ||
+					row.dataset.omnifyBomFieldCheckGroupHeader) continue;
+				const cell = row.cells[columnIndex];
+				if (!cell) continue;
+				cell.style.width = `${resizedWidth}px`;
+				cell.style.whiteSpace = 'normal';
+				cell.style.overflowWrap = 'anywhere';
+			}
+		};
+
+		resizer.addEventListener('pointerdown', (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			const startX = event.clientX;
+			const startWidth = headerCell.getBoundingClientRect().width;
+			resizer.setPointerCapture(event.pointerId);
+			const handlePointerMove = (moveEvent) =>
+				setWidth(startWidth + moveEvent.clientX - startX);
+			const stopResizing = () => {
+				document.removeEventListener('pointermove', handlePointerMove);
+				document.removeEventListener('pointerup', stopResizing);
+				document.removeEventListener('pointercancel', stopResizing);
+			};
+			document.addEventListener('pointermove', handlePointerMove);
+			document.addEventListener('pointerup', stopResizing);
+			document.addEventListener('pointercancel', stopResizing);
+		});
+		resizer.addEventListener('click', (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+		});
+		resizer.addEventListener('keydown', (event) => {
+			if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+			event.preventDefault();
+			const direction = event.key === 'ArrowRight' ? 1 : -1;
+			setWidth(headerCell.getBoundingClientRect().width + direction * 10);
+		});
+		headerCell.appendChild(resizer);
+	}
+
+	if (headerCell.dataset.omnifyBomColumnResized === 'true') {
+		for (const row of table.rows) {
+			if (row === getTableHeaderRow(table) ||
+				row.dataset.omnifyBomRevisionGroupHeader ||
+				row.dataset.omnifyBomFieldCheckGroupHeader) continue;
+			const cell = row.cells[columnIndex];
+			if (cell) {
+				cell.style.whiteSpace = 'normal';
+				cell.style.overflowWrap = 'anywhere';
+			}
+		}
+	}
+}
+
 function updateNoWrapColumnWidth(table, columnName) {
 	const columnIndex = findTableColumnIndex(table, columnName);
 	if (columnIndex < 0) return;
@@ -670,12 +776,20 @@ function updateBomTableColumns() {
 		const table = document.querySelector(tableSelector);
 		if (table && !table.hidden) {
 			updateDescriptionWidth(tableSelector);
+			for (const columnName of ['Description', 'Refdes', 'Notes']) {
+				addBomColumnResizer(table, columnName);
+			}
 			sortEcoBomByFind(table);
 		}
 	}
-	if (getElementText(SELECTORS.itemBomHeader) === 'Parts List/BOM') {
-		const table = document.querySelector(SELECTORS.itemBomTable);
-		if (table && !table.hidden) updateDescriptionWidth(SELECTORS.itemBomTable);
+	const itemBomTable = document.querySelector(SELECTORS.itemBomTable);
+	if (itemBomTable && !itemBomTable.hidden) {
+		if (getElementText(SELECTORS.itemBomHeader) === 'Parts List/BOM') {
+			updateDescriptionWidth(SELECTORS.itemBomTable);
+		}
+		for (const columnName of ['Description', 'Refdes', 'Notes']) {
+			addBomColumnResizer(itemBomTable, columnName);
+		}
 	}
 	if (itemBomFeaturesSettingLoaded) addEcoDrawingViewControl();
 
