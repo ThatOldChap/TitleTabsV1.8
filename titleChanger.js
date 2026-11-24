@@ -201,6 +201,7 @@ function addBomColumnResizer(table, columnName) {
 		}
 
 		const resizer = document.createElement('span');
+		const originalTableMinWidth = table.style.minWidth;
 		resizer.setAttribute('role', 'separator');
 		resizer.setAttribute('aria-orientation', 'vertical');
 		resizer.setAttribute('aria-label', `Resize ${columnName} column`);
@@ -220,7 +221,19 @@ function addBomColumnResizer(table, columnName) {
 			zIndex: '2'
 		});
 
-		const setWidth = (width) => {
+		const getResizeContext = () => {
+			const tableWidth = table.getBoundingClientRect().width;
+			const parent = table.parentElement;
+			return {
+				tableWidth,
+				columnWidth: headerCell.getBoundingClientRect().width,
+				availableWidth: parent?.clientWidth ||
+					parent?.getBoundingClientRect().width ||
+					tableWidth
+			};
+		};
+
+		const setWidth = (width, resizeContext) => {
 			const resizedWidth = Math.round(Math.max(80, Math.min(1200, width)));
 			const currentColumnIndex = findTableColumnIndex(table, columnName);
 			if (currentColumnIndex < 0) return;
@@ -237,16 +250,23 @@ function addBomColumnResizer(table, columnName) {
 				cell.style.whiteSpace = 'normal';
 				cell.style.overflowWrap = 'anywhere';
 			}
+
+			const resizedTableWidth = resizeContext.tableWidth +
+				resizedWidth - resizeContext.columnWidth;
+			table.style.minWidth = resizedTableWidth > resizeContext.availableWidth + 1
+				? `${Math.ceil(resizedTableWidth)}px`
+				: originalTableMinWidth;
 		};
 
 		resizer.addEventListener('pointerdown', (event) => {
 			event.preventDefault();
 			event.stopPropagation();
 			const startX = event.clientX;
-			const startWidth = headerCell.getBoundingClientRect().width;
+			const resizeContext = getResizeContext();
+			const startWidth = resizeContext.columnWidth;
 			resizer.setPointerCapture(event.pointerId);
 			const handlePointerMove = (moveEvent) =>
-				setWidth(startWidth + moveEvent.clientX - startX);
+				setWidth(startWidth + moveEvent.clientX - startX, resizeContext);
 			const stopResizing = () => {
 				document.removeEventListener('pointermove', handlePointerMove);
 				document.removeEventListener('pointerup', stopResizing);
@@ -264,7 +284,8 @@ function addBomColumnResizer(table, columnName) {
 			if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
 			event.preventDefault();
 			const direction = event.key === 'ArrowRight' ? 1 : -1;
-			setWidth(headerCell.getBoundingClientRect().width + direction * 10);
+			const resizeContext = getResizeContext();
+			setWidth(resizeContext.columnWidth + direction * 10, resizeContext);
 		});
 		headerCell.appendChild(resizer);
 	}
