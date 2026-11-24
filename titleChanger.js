@@ -222,6 +222,8 @@ function addBomColumnResizer(table, columnName) {
 
 		const setWidth = (width) => {
 			const resizedWidth = Math.round(Math.max(80, Math.min(1200, width)));
+			const currentColumnIndex = findTableColumnIndex(table, columnName);
+			if (currentColumnIndex < 0) return;
 			headerCell.dataset.omnifyBomColumnResized = 'true';
 			resizer.setAttribute('aria-valuenow', String(resizedWidth));
 			headerCell.style.width = `${resizedWidth}px`;
@@ -229,7 +231,7 @@ function addBomColumnResizer(table, columnName) {
 				if (row === getTableHeaderRow(table) ||
 					row.dataset.omnifyBomRevisionGroupHeader ||
 					row.dataset.omnifyBomFieldCheckGroupHeader) continue;
-				const cell = row.cells[columnIndex];
+				const cell = row.cells[currentColumnIndex];
 				if (!cell) continue;
 				cell.style.width = `${resizedWidth}px`;
 				cell.style.whiteSpace = 'normal';
